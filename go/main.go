@@ -19,6 +19,7 @@ import (
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/middleware"
 	"github.com/labstack/gommon/log"
+	proxy "github.com/shogo82148/go-sql-proxy"
 )
 
 const Limit = 20
@@ -223,6 +224,11 @@ func (mc *MySQLConnectionEnv) ConnectDB() (*sqlx.DB, error) {
 	return sqlx.Open("mysql", dsn)
 }
 
+func (mc *MySQLConnectionEnv) ConnectDBDev() (*sqlx.DB, error) {
+	dsn := fmt.Sprintf("%v:%v@tcp(%v:%v)/%v?interpolateParams=true", mc.User, mc.Password, mc.Host, mc.Port, mc.DBName)
+	return sqlx.Open("mysql:trace", dsn)
+}
+
 func init() {
 	jsonText, err := ioutil.ReadFile("../fixture/chair_condition.json")
 	if err != nil {
@@ -282,7 +288,12 @@ func main() {
 	mySQLConnectionData = NewMySQLConnectionEnv()
 
 	var err error
-	db, err = mySQLConnectionData.ConnectDB()
+	if isDev {
+		proxy.RegisterTracer()
+		db, err = mySQLConnectionData.ConnectDBDev()
+	} else {
+		db, err = mySQLConnectionData.ConnectDB()
+	}
 	if err != nil {
 		e.Logger.Fatalf("DB connection failed : %v", err)
 	}
