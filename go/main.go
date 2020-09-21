@@ -15,6 +15,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
+	geo "github.com/kellydunn/golang-geo"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/middleware"
 	"github.com/labstack/gommon/log"
@@ -872,6 +873,7 @@ func searchEstateNazotte(c echo.Context) error {
 	}
 
 	b := coordinates.getBoundingBox()
+	polygon := coordinates.getPolygon()
 	estatesInBoundingBox := []Estate{}
 	query := `SELECT * FROM estate WHERE latitude <= ? AND latitude >= ? AND longitude <= ? AND longitude >= ? ORDER BY popularity DESC, id ASC`
 	err = db.Select(&estatesInBoundingBox, query, b.BottomRightCorner.Latitude, b.TopLeftCorner.Latitude, b.BottomRightCorner.Longitude, b.TopLeftCorner.Longitude)
@@ -885,20 +887,11 @@ func searchEstateNazotte(c echo.Context) error {
 
 	estatesInPolygon := []Estate{}
 	for _, estate := range estatesInBoundingBox {
-		validatedEstate := Estate{}
+		p := geo.NewPoint(estate.Latitude, estate.Longitude)
+		ok := polygon.Contains(p)
 
-		point := fmt.Sprintf("'POINT(%f %f)'", estate.Latitude, estate.Longitude)
-		query := fmt.Sprintf(`SELECT * FROM estate WHERE id = ? AND ST_Contains(ST_PolygonFromText(%s), ST_GeomFromText(%s))`, coordinates.coordinatesToText(), point)
-		err = db.Get(&validatedEstate, query, estate.ID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				continue
-			} else {
-				c.Echo().Logger.Errorf("db access is failed on executing validate if estate is in polygon : %v", err)
-				return c.NoContent(http.StatusInternalServerError)
-			}
-		} else {
-			estatesInPolygon = append(estatesInPolygon, validatedEstate)
+		if ok {
+			estatesInPolygon = append(estatesInPolygon, estate)
 		}
 	}
 
@@ -977,6 +970,15 @@ func (cs Coordinates) getBoundingBox() BoundingBox {
 		}
 	}
 	return boundingBox
+}
+
+func (cs Coordinates) getPolygon() *geo.Polygon {
+	coordinates := cs.Coordinates
+	points := make([]*geo.Point, 0, len(coordinates))
+	for _, coordinate := range coordinates {
+		points = append(points, geo.NewPoint(coordinate.Latitude, coordinate.Longitude))
+	}
+	return geo.NewPolygon(points)
 }
 
 func (cs Coordinates) coordinatesToText() string {
