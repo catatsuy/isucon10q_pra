@@ -874,7 +874,7 @@ func searchEstateNazotte(c echo.Context) error {
 
 	b := coordinates.getBoundingBox()
 	polygon := coordinates.getPolygon()
-	estatesInBoundingBox := []Estate{}
+	estatesInBoundingBox := make([]Estate, 0, 100)
 	query := `SELECT * FROM estate WHERE latitude <= ? AND latitude >= ? AND longitude <= ? AND longitude >= ? ORDER BY popularity DESC, id ASC`
 	err = db.Select(&estatesInBoundingBox, query, b.BottomRightCorner.Latitude, b.TopLeftCorner.Latitude, b.BottomRightCorner.Longitude, b.TopLeftCorner.Longitude)
 	if err == sql.ErrNoRows {
@@ -886,12 +886,17 @@ func searchEstateNazotte(c echo.Context) error {
 	}
 
 	estatesInPolygon := []Estate{}
+	count := 0
 	for _, estate := range estatesInBoundingBox {
 		p := geo.NewPoint(estate.Latitude, estate.Longitude)
 		ok := polygon.Contains(p)
 
 		if ok {
 			estatesInPolygon = append(estatesInPolygon, estate)
+			count++
+			if count == NazotteLimit {
+				break
+			}
 		}
 	}
 
