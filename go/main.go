@@ -681,6 +681,7 @@ func postEstate(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 	defer tx.Rollback()
+	estates := make([]Estate, 0, len(records))
 	for _, row := range records {
 		rm := RecordMapper{Record: row}
 		id := rm.NextInt()
@@ -699,12 +700,38 @@ func postEstate(c echo.Context) error {
 			c.Logger().Errorf("failed to read record: %v", err)
 			return c.NoContent(http.StatusBadRequest)
 		}
-		_, err := tx.Exec("INSERT INTO estate(id, name, description, thumbnail, address, latitude, longitude, rent, door_height, door_width, features, popularity) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", id, name, description, thumbnail, address, latitude, longitude, rent, doorHeight, doorWidth, features, popularity)
-		if err != nil {
-			c.Logger().Errorf("failed to insert estate: %v", err)
-			return c.NoContent(http.StatusInternalServerError)
+		e := Estate{
+			ID:          int64(id),
+			Name:        name,
+			Description: description,
+			Thumbnail:   thumbnail,
+			Address:     address,
+			Latitude:    latitude,
+			Longitude:   longitude,
+			Rent:        int64(rent),
+			DoorHeight:  int64(doorHeight),
+			DoorWidth:   int64(doorWidth),
+			Features:    features,
+			Popularity:  int64(popularity),
 		}
+
+		estates = append(estates, e)
 	}
+
+	queryParts := make([]string, 0, len(estates))
+	for _, e := range estates {
+		qp := fmt.Sprintf(`%d,"%s","%s","%s","%s",%g,%g,%d,%d,%d,"%s",%d`, e.ID, e.Name, e.Description, e.Thumbnail, e.Address, e.Latitude, e.Longitude, e.Rent, e.DoorHeight, e.DoorWidth, e.Features, e.Popularity)
+		queryParts = append(queryParts, qp)
+	}
+
+	query := fmt.Sprintf("INSERT INTO estate(id, name, description, thumbnail, address, latitude, longitude, rent, door_height, door_width, features, popularity) VALUES (%s)", strings.Join(queryParts, "),("))
+	c.Logger().Errorf(query)
+	_, err = tx.Exec(query)
+	if err != nil {
+		c.Logger().Errorf("failed to insert estate: %v", err)
+		return c.NoContent(http.StatusInternalServerError)
+	}
+
 	if err := tx.Commit(); err != nil {
 		c.Logger().Errorf("failed to commit tx: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
