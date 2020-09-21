@@ -248,6 +248,15 @@ func main() {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 
+	var isDev bool
+	if os.Getenv("DEV") == "1" {
+		isDev = true
+	}
+
+	if isDev {
+		e.Use(middleware.Static("../data"))
+	}
+
 	// Initialize
 	e.POST("/initialize", initialize)
 
