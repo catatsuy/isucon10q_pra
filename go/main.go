@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
@@ -229,6 +230,41 @@ func (mc *MySQLConnectionEnv) ConnectDBDev() (*sqlx.DB, error) {
 	return sqlx.Open("mysql:trace", dsn)
 }
 
+type cacheEstates struct {
+	sync.Mutex
+	items map[string][]Estate
+}
+
+func NewCacheEstates() *cacheEstates {
+	m := make(map[string][]Estate)
+	c := &cacheEstates{
+		items: m,
+	}
+	return c
+}
+
+func (c *cacheEstates) Set(key string, value []Estate) {
+	c.Lock()
+	c.items[key] = value
+	c.Unlock()
+}
+
+func (c *cacheEstates) Get(key string) ([]Estate, bool) {
+	c.Lock()
+	v, found := c.items[key]
+	c.Unlock()
+	return v, found
+}
+
+func (c *cacheEstates) Rotate() {
+	m := make(map[string][]Estate)
+	c.Lock()
+	c.items = m
+	c.Unlock()
+}
+
+var mCacheEstates *cacheEstates
+
 func init() {
 	jsonText, err := ioutil.ReadFile("../fixture/chair_condition.json")
 	if err != nil {
@@ -243,6 +279,8 @@ func init() {
 		os.Exit(1)
 	}
 	json.Unmarshal(jsonText, &estateSearchCondition)
+
+	mCacheEstates = NewCacheEstates()
 }
 
 func main() {
@@ -759,12 +797,14 @@ func postEstate(c echo.Context) error {
 		c.Logger().Errorf("failed to commit tx: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
+	mCacheEstates.Rotate()
 	return c.NoContent(http.StatusCreated)
 }
 
 func searchEstates(c echo.Context) error {
 	conditions := make([]string, 0)
 	params := make([]interface{}, 0)
+	cacheKey := ""
 
 	if c.QueryParam("doorHeightRangeId") != "" {
 		doorHeight, err := getRange(estateSearchCondition.DoorHeight, c.QueryParam("doorHeightRangeId"))
@@ -776,10 +816,12 @@ func searchEstates(c echo.Context) error {
 		if doorHeight.Min != -1 {
 			conditions = append(conditions, "door_height >= ?")
 			params = append(params, doorHeight.Min)
+			cacheKey += fmt.Sprintf("door_height >= %d", doorHeight.Min)
 		}
 		if doorHeight.Max != -1 {
 			conditions = append(conditions, "door_height < ?")
 			params = append(params, doorHeight.Max)
+			cacheKey += fmt.Sprintf("door_height < %d;", doorHeight.Max)
 		}
 	}
 
@@ -793,10 +835,12 @@ func searchEstates(c echo.Context) error {
 		if doorWidth.Min != -1 {
 			conditions = append(conditions, "door_width >= ?")
 			params = append(params, doorWidth.Min)
+			cacheKey += fmt.Sprintf("door_width >= ;", doorWidth.Min)
 		}
 		if doorWidth.Max != -1 {
 			conditions = append(conditions, "door_width < ?")
 			params = append(params, doorWidth.Max)
+			cacheKey += fmt.Sprintf("door_width < %d;", doorWidth.Max)
 		}
 	}
 
@@ -810,10 +854,12 @@ func searchEstates(c echo.Context) error {
 		if estateRent.Min != -1 {
 			conditions = append(conditions, "rent >= ?")
 			params = append(params, estateRent.Min)
+			cacheKey += fmt.Sprintf("rent >= %d;", estateRent.Min)
 		}
 		if estateRent.Max != -1 {
 			conditions = append(conditions, "rent < ?")
 			params = append(params, estateRent.Max)
+			cacheKey += fmt.Sprintf("rent < %d;", estateRent.Max)
 		}
 	}
 
@@ -821,6 +867,7 @@ func searchEstates(c echo.Context) error {
 		for _, f := range strings.Split(c.QueryParam("features"), ",") {
 			conditions = append(conditions, "features like concat('%', ?, '%')")
 			params = append(params, f)
+			cacheKey += fmt.Sprintf("features like concat(%s);", f)
 		}
 	}
 
@@ -841,19 +888,27 @@ func searchEstates(c echo.Context) error {
 		return c.NoContent(http.StatusBadRequest)
 	}
 
+	var res EstateSearchResponse
+
+	cacheKey += fmt.Sprintf("page %d; perPage %d", page, perPage)
+	estates, ok := mCacheEstates.Get(cacheKey)
+	if ok {
+		res.Estates = estates
+		return c.JSON(http.StatusOK, res)
+	}
+
 	searchQuery := "SELECT * FROM estate WHERE "
 	countQuery := "SELECT COUNT(*) FROM estate WHERE "
 	searchCondition := strings.Join(conditions, " AND ")
 	limitOffset := " ORDER BY popularity DESC, id ASC LIMIT ? OFFSET ?"
 
-	var res EstateSearchResponse
 	err = db.Get(&res.Count, countQuery+searchCondition, params...)
 	if err != nil {
 		c.Logger().Errorf("searchEstates DB execution error : %v", err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	estates := []Estate{}
+	estates = make([]Estate, 0, perPage)
 	params = append(params, perPage, page*perPage)
 	err = db.Select(&estates, searchQuery+searchCondition+limitOffset, params...)
 	if err != nil {
@@ -865,6 +920,7 @@ func searchEstates(c echo.Context) error {
 	}
 
 	res.Estates = estates
+	mCacheEstates.Set(cacheKey, estates)
 
 	return c.JSON(http.StatusOK, res)
 }
