@@ -16,7 +16,6 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
-	geo "github.com/kellydunn/golang-geo"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/middleware"
 	"github.com/labstack/gommon/log"
@@ -74,6 +73,7 @@ type Estate struct {
 	DoorWidth   int64   `db:"door_width" json:"doorWidth"`
 	Features    string  `db:"features" json:"features"`
 	Popularity  int64   `db:"popularity" json:"-"`
+	Point       string  `db:"point" json:"-"`
 }
 
 //EstateSearchResponse estate/searchへのレスポンスの形式
@@ -1059,11 +1059,9 @@ func searchEstateNazotte(c echo.Context) error {
 		return c.NoContent(http.StatusBadRequest)
 	}
 
-	b := coordinates.getBoundingBox()
-	polygon := coordinates.getPolygon()
+	query := fmt.Sprintf("SELECT * FROM estate FORCE INDEX(estate_point_idx) WHERE ST_Contains(ST_PolygonFromText(%s), point) ORDER BY popularity DESC, id ASC LIMIT ?", coordinates.coordinatesToText())
 	estatesInBoundingBox := make([]Estate, 0, 100)
-	query := `SELECT * FROM estate WHERE latitude <= ? AND latitude >= ? AND longitude <= ? AND longitude >= ? ORDER BY popularity DESC, id ASC`
-	err = db.Select(&estatesInBoundingBox, query, b.BottomRightCorner.Latitude, b.TopLeftCorner.Latitude, b.BottomRightCorner.Longitude, b.TopLeftCorner.Longitude)
+	err = db.Select(&estatesInBoundingBox, query, NazotteLimit)
 	if err == sql.ErrNoRows {
 		c.Echo().Logger.Infof("select * from estate where latitude ...", err)
 		return c.JSON(http.StatusOK, EstateSearchResponse{Count: 0, Estates: []Estate{}})
@@ -1072,28 +1070,8 @@ func searchEstateNazotte(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	estatesInPolygon := []Estate{}
-	count := 0
-	for _, estate := range estatesInBoundingBox {
-		p := geo.NewPoint(estate.Latitude, estate.Longitude)
-		ok := polygon.Contains(p)
-
-		if ok {
-			estatesInPolygon = append(estatesInPolygon, estate)
-			count++
-			if count == NazotteLimit {
-				break
-			}
-		}
-	}
-
 	var re EstateSearchResponse
-	re.Estates = []Estate{}
-	if len(estatesInPolygon) > NazotteLimit {
-		re.Estates = estatesInPolygon[:NazotteLimit]
-	} else {
-		re.Estates = estatesInPolygon
-	}
+	re.Estates = estatesInBoundingBox
 	re.Count = int64(len(re.Estates))
 
 	return c.JSON(http.StatusOK, re)
@@ -1162,15 +1140,6 @@ func (cs Coordinates) getBoundingBox() BoundingBox {
 		}
 	}
 	return boundingBox
-}
-
-func (cs Coordinates) getPolygon() *geo.Polygon {
-	coordinates := cs.Coordinates
-	points := make([]*geo.Point, 0, len(coordinates))
-	for _, coordinate := range coordinates {
-		points = append(points, geo.NewPoint(coordinate.Latitude, coordinate.Longitude))
-	}
-	return geo.NewPolygon(points)
 }
 
 func (cs Coordinates) coordinatesToText() string {
