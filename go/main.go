@@ -265,6 +265,49 @@ func (c *cacheEstates) Rotate() {
 
 var mCacheEstates *cacheEstates
 
+type chairCount struct {
+	chairs []Chair
+	count  int64
+}
+
+type cacheChairs struct {
+	sync.Mutex
+	items map[string]chairCount
+}
+
+func NewCacheChairs() *cacheChairs {
+	m := make(map[string]chairCount)
+	c := &cacheChairs{
+		items: m,
+	}
+	return c
+}
+
+func (c *cacheChairs) Set(key string, value []Chair, count int64) {
+	c.Lock()
+	c.items[key] = chairCount{
+		chairs: value,
+		count:  count,
+	}
+	c.Unlock()
+}
+
+func (c *cacheChairs) Get(key string) ([]Chair, int64, bool) {
+	c.Lock()
+	v, found := c.items[key]
+	c.Unlock()
+	return v.chairs, v.count, found
+}
+
+func (c *cacheChairs) Rotate() {
+	m := make(map[string]chairCount)
+	c.Lock()
+	c.items = m
+	c.Unlock()
+}
+
+var mCacheChairs *cacheChairs
+
 func init() {
 	jsonText, err := ioutil.ReadFile("../fixture/chair_condition.json")
 	if err != nil {
@@ -281,6 +324,7 @@ func init() {
 	json.Unmarshal(jsonText, &estateSearchCondition)
 
 	mCacheEstates = NewCacheEstates()
+	mCacheChairs = NewCacheChairs()
 }
 
 func main() {
@@ -473,12 +517,14 @@ func postChair(c echo.Context) error {
 		c.Logger().Errorf("failed to commit tx: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
+	mCacheChairs.Rotate()
 	return c.NoContent(http.StatusCreated)
 }
 
 func searchChairs(c echo.Context) error {
 	conditions := make([]string, 0)
 	params := make([]interface{}, 0)
+	cacheKey := ""
 
 	if c.QueryParam("priceRangeId") != "" {
 		chairPrice, err := getRange(chairSearchCondition.Price, c.QueryParam("priceRangeId"))
@@ -490,10 +536,12 @@ func searchChairs(c echo.Context) error {
 		if chairPrice.Min != -1 {
 			conditions = append(conditions, "price >= ?")
 			params = append(params, chairPrice.Min)
+			cacheKey += fmt.Sprintf("price >= %d;", chairPrice.Min)
 		}
 		if chairPrice.Max != -1 {
 			conditions = append(conditions, "price < ?")
 			params = append(params, chairPrice.Max)
+			cacheKey += fmt.Sprintf("price < %d;", chairPrice.Max)
 		}
 	}
 
@@ -507,10 +555,12 @@ func searchChairs(c echo.Context) error {
 		if chairHeight.Min != -1 {
 			conditions = append(conditions, "height >= ?")
 			params = append(params, chairHeight.Min)
+			cacheKey += fmt.Sprintf("height >= %d;", chairHeight.Min)
 		}
 		if chairHeight.Max != -1 {
 			conditions = append(conditions, "height < ?")
 			params = append(params, chairHeight.Max)
+			cacheKey += fmt.Sprintf("height < %d;", chairHeight.Max)
 		}
 	}
 
@@ -524,10 +574,12 @@ func searchChairs(c echo.Context) error {
 		if chairWidth.Min != -1 {
 			conditions = append(conditions, "width >= ?")
 			params = append(params, chairWidth.Min)
+			cacheKey += fmt.Sprintf("width >= %d;", chairWidth.Min)
 		}
 		if chairWidth.Max != -1 {
 			conditions = append(conditions, "width < ?")
 			params = append(params, chairWidth.Max)
+			cacheKey += fmt.Sprintf("width < %d;", chairWidth.Max)
 		}
 	}
 
@@ -541,27 +593,34 @@ func searchChairs(c echo.Context) error {
 		if chairDepth.Min != -1 {
 			conditions = append(conditions, "depth >= ?")
 			params = append(params, chairDepth.Min)
+			cacheKey += fmt.Sprintf("depth >= %d;", chairDepth.Min)
 		}
 		if chairDepth.Max != -1 {
 			conditions = append(conditions, "depth < ?")
 			params = append(params, chairDepth.Max)
+			cacheKey += fmt.Sprintf("depth < %d;", chairDepth.Max)
 		}
 	}
 
 	if c.QueryParam("kind") != "" {
 		conditions = append(conditions, "kind = ?")
-		params = append(params, c.QueryParam("kind"))
+		kind := c.QueryParam("kind")
+		params = append(params, kind)
+		cacheKey += fmt.Sprintf("kind = %s;", kind)
 	}
 
 	if c.QueryParam("color") != "" {
 		conditions = append(conditions, "color = ?")
-		params = append(params, c.QueryParam("color"))
+		color := c.QueryParam("color")
+		params = append(params, color)
+		cacheKey += fmt.Sprintf("color = %s;", color)
 	}
 
 	if c.QueryParam("features") != "" {
 		for _, f := range strings.Split(c.QueryParam("features"), ",") {
 			conditions = append(conditions, "features LIKE CONCAT('%', ?, '%')")
 			params = append(params, f)
+			cacheKey += fmt.Sprintf("features: %s;", f)
 		}
 	}
 
@@ -583,20 +642,29 @@ func searchChairs(c echo.Context) error {
 		c.Logger().Infof("Invalid format perPage parameter : %v", err)
 		return c.NoContent(http.StatusBadRequest)
 	}
+	var res ChairSearchResponse
+
+	cacheKey += fmt.Sprintf("page %d; perPage %d;", page, perPage)
+
+	chairs, cnt, ok := mCacheChairs.Get(cacheKey)
+	if ok {
+		res.Count = cnt
+		res.Chairs = chairs
+		return c.JSON(http.StatusOK, res)
+	}
 
 	searchQuery := "SELECT * FROM chair WHERE "
 	countQuery := "SELECT COUNT(*) FROM chair WHERE "
 	searchCondition := strings.Join(conditions, " AND ")
 	limitOffset := " ORDER BY popularity DESC, id ASC LIMIT ? OFFSET ?"
 
-	var res ChairSearchResponse
 	err = db.Get(&res.Count, countQuery+searchCondition, params...)
 	if err != nil {
 		c.Logger().Errorf("searchChairs DB execution error : %v", err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	chairs := []Chair{}
+	chairs = make([]Chair, 0, 100)
 	params = append(params, perPage, page*perPage)
 	err = db.Select(&chairs, searchQuery+searchCondition+limitOffset, params...)
 	if err != nil {
@@ -608,6 +676,7 @@ func searchChairs(c echo.Context) error {
 	}
 
 	res.Chairs = chairs
+	mCacheChairs.Set(cacheKey, chairs, res.Count)
 
 	return c.JSON(http.StatusOK, res)
 }
@@ -660,6 +729,7 @@ func buyChair(c echo.Context) error {
 		c.Echo().Logger.Errorf("transaction commit error : %v", err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
+	mCacheChairs.Rotate()
 
 	return c.NoContent(http.StatusOK)
 }
