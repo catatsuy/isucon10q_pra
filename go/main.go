@@ -905,7 +905,7 @@ func searchEstates(c echo.Context) error {
 		if doorWidth.Min != -1 {
 			conditions = append(conditions, "door_width >= ?")
 			params = append(params, doorWidth.Min)
-			cacheKey += fmt.Sprintf("door_width >= ;", doorWidth.Min)
+			cacheKey += fmt.Sprintf("door_width >= %d;", doorWidth.Min)
 		}
 		if doorWidth.Max != -1 {
 			conditions = append(conditions, "door_width < ?")
