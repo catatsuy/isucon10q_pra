@@ -21,10 +21,8 @@ CREATE TABLE isuumo.estate
     point       POINT AS (POINT(latitude, longitude)) STORED NOT NULL SRID 0,
     SPATIAL KEY estate_point_idx(point),
     INDEX idx_rent_id (`rent` ASC, `id` ASC),
-    INDEX idx_latitude_longitude (`latitude`, `longitude`),
     INDEX idx_popularity_id (`popularity` DESC, `id` ASC),
-    INDEX idx_door_height_rent_width (`door_height`, `rent`, `door_width`),
-    INDEX idx_door_width_rent_height (`door_width`, `rent`, `door_height`)
+    INDEX idx_rent_door_width_height (`rent`, `door_width`, `door_height`)
 );
 
 CREATE TABLE isuumo.chair
@@ -44,5 +42,8 @@ CREATE TABLE isuumo.chair
     stock       INTEGER         NOT NULL,
     INDEX idx_price_id (`price` ASC, `id` ASC),
     INDEX idx_price_stock (`price`, `stock`),
+    INDEX idx_kind_stock (`kind`, `stock`),
+    INDEX idx_color_stock (`color`, `stock`),
+    INDEX idx_kind_color_stock (`kind`, `color`, `stock`),
     INDEX idx_popularity_id (popularity DESC, id ASC)
 );
